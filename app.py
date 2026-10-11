@@ -10,6 +10,7 @@ from mindmapping_study.storage import Storage
 from mindmapping_study.catalog import discover_pdfs, register_pdf, registered_documents
 from mindmapping_study.pipeline import artifact_base, get_cached, save_result
 from mindmapping_study.incremental import generate_chunked
+from mindmapping_study.document_flow import reading_sequence, page_groups
 from mindmapping_study.report import (report_base, generate_integrated_report, load_integrated_report, render_html, audit_report)
 from mindmapping_study.history import TrackedClient, list_events, list_studies, totals
 from mindmapping_study.chapters import load_outline, chapter_sections, section_candidates, load_inferred_outline
@@ -271,8 +272,8 @@ with report_tabs[1]:
                 components.html(cached_html, height=650, scrolling=True)
 
 with report_tabs[0]:
-    # Three complementary views: outline, focused neighbors, and full graph.
-    view = st.radio('Mindmap 보기', ['계층형', 'Focus Graph', '전체 관계형'], horizontal=True)
+    # Four complementary views: document reading order, outline, focused neighbors, and full graph.
+    view = st.radio('Mindmap 보기', ['Document Flow', '계층형', 'Focus Graph', '전체 관계형'], horizontal=True)
     concepts = {c.id: c for c in result.concepts}
     ids = list(concepts)
     selected_key = f'concept_{selected}'
@@ -287,41 +288,73 @@ with report_tabs[0]:
                                 format_func=lambda x: concepts[x].title_en or concepts[x].title_ko, key=focus_widget_key)
         st.session_state[selected_key] = focus_id
 
+    if view == 'Document Flow':
+        sequence = reading_sequence(result)
+        st.caption('원본 PDF의 첫 인용 페이지 순서입니다. 같은 페이지에서는 저장된 Concept 순서를 사용하며 정확한 문단 순서를 보장하지 않습니다.')
+        if sequence:
+            order_ids = [c.id for c in sequence]
+            current_index = order_ids.index(focus_id) if focus_id in order_ids else 0
+            flow_id = st.selectbox('Reading Order · 학습할 Concept', order_ids, index=current_index,
+                format_func=lambda cid: f"{order_ids.index(cid) + 1}. p.{min(concepts[cid].source_pages)} · {concepts[cid].title_en or concepts[cid].title_ko}",
+                key=f'flow_select_{selected}_{start}_{end}_{focus_id}')
+            if flow_id != focus_id:
+                st.session_state[f'{selected_key}_pending'] = flow_id
+                st.session_state[f'{selected_key}_sync'] = True
+                st.rerun()
+        else:
+            st.info('Reading Order로 표시할 Concept가 없습니다.')
+
     left, right = st.columns([3, 2])
     with left:
         st.subheader(result.chapter_title)
-        if view == 'Focus Graph':
-            focus = concepts[focus_id]
-            visible = {focus_id, *focus.related_ids}
-            if focus.parent_id:
-                visible.add(focus.parent_id)
-            visible.update(c.id for c in result.concepts if c.parent_id == focus_id or focus_id in c.related_ids)
+        if view == 'Document Flow':
+            sequence = reading_sequence(result)
+            positions = {c.id: i + 1 for i, c in enumerate(sequence)}
+            for page_number, items in page_groups(result):
+                st.markdown(f'#### PDF p.{page_number}')
+                for item in items:
+                    title = item.title_en or item.title_ko
+                    marker = '▶ ' if item.id == focus_id else ''
+                    if st.button(f'{marker}{positions[item.id]:02d}. {title}',
+                                 key=f'flow_item_{selected}_{start}_{end}_{item.id}',
+                                 use_container_width=True):
+                        st.session_state[f'{selected_key}_pending'] = item.id
+                        st.session_state[f'{selected_key}_sync'] = True
+                        st.rerun()
+            st.caption('Page 내부의 실제 문장 순서는 PDF Text Block Anchor를 추가한 이후 정밀화할 수 있습니다.')
         else:
-            visible = set(ids)
-        nodes = [Node(id=c.id, label=((c.title_en or c.title_ko)[:24] + '…' if len(c.title_en or c.title_ko) > 24 else (c.title_en or c.title_ko)),
-                      size=20 if c.id != focus_id else 30,
-                      shape='box', color='#c8e0ff' if c.id != focus_id else '#81b3ff',
-                      font={'size': 15, 'face': 'Arial'})
-                 for c in result.concepts if c.id in visible]
-        edges = [Edge(source=c.parent_id, target=c.id, color='#7895b5')
-                 for c in result.concepts if c.parent_id and c.id in visible and c.parent_id in visible]
-        if view != '계층형':
-            seen_edges = set()
-            for c in result.concepts:
-                for other in c.related_ids:
-                    pair = tuple(sorted((c.id, other)))
-                    if c.id in visible and other in visible and pair not in seen_edges:
-                        seen_edges.add(pair)
-                        edges.append(Edge(source=c.id, target=other, dashes=True, color='#d6a066'))
-        config = Config(width='100%', height=650, directed=True, physics=False,
-                        hierarchical=(view == '계층형'),
-                        interaction={'hover': True, 'navigationButtons': True, 'zoomView': True})
-        clicked = agraph(nodes=nodes, edges=edges, config=config)
-        if clicked in concepts and clicked != focus_id:
-            st.session_state[f'{selected_key}_pending'] = clicked
-            st.session_state[f'{selected_key}_sync'] = True
-            st.rerun()
-        st.caption('실선: 상하위 관계 · 점선: 연관 관계. Focus Graph는 선택 개념 주변만 표시합니다.')
+            if view == 'Focus Graph':
+                focus = concepts[focus_id]
+                visible = {focus_id, *focus.related_ids}
+                if focus.parent_id:
+                    visible.add(focus.parent_id)
+                visible.update(c.id for c in result.concepts if c.parent_id == focus_id or focus_id in c.related_ids)
+            else:
+                visible = set(ids)
+            nodes = [Node(id=c.id, label=((c.title_en or c.title_ko)[:24] + '…' if len(c.title_en or c.title_ko) > 24 else (c.title_en or c.title_ko)),
+                          size=20 if c.id != focus_id else 30,
+                          shape='box', color='#c8e0ff' if c.id != focus_id else '#81b3ff',
+                          font={'size': 15, 'face': 'Arial'})
+                     for c in result.concepts if c.id in visible]
+            edges = [Edge(source=c.parent_id, target=c.id, color='#7895b5')
+                     for c in result.concepts if c.parent_id and c.id in visible and c.parent_id in visible]
+            if view != '계층형':
+                seen_edges = set()
+                for c in result.concepts:
+                    for other in c.related_ids:
+                        pair = tuple(sorted((c.id, other)))
+                        if c.id in visible and other in visible and pair not in seen_edges:
+                            seen_edges.add(pair)
+                            edges.append(Edge(source=c.id, target=other, dashes=True, color='#d6a066'))
+            config = Config(width='100%', height=650, directed=True, physics=False,
+                            hierarchical=(view == '계층형'),
+                            interaction={'hover': True, 'navigationButtons': True, 'zoomView': True})
+            clicked = agraph(nodes=nodes, edges=edges, config=config)
+            if clicked in concepts and clicked != focus_id:
+                st.session_state[f'{selected_key}_pending'] = clicked
+                st.session_state[f'{selected_key}_sync'] = True
+                st.rerun()
+            st.caption('실선: 상하위 관계 · 점선: 연관 관계. Focus Graph는 선택 개념 주변만 표시합니다.')
 
     with right:
         concept = concepts[focus_id]

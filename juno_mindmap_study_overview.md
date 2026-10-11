@@ -1,7 +1,7 @@
 # Juno Mindmap Study — 프로젝트 개요, 개발 과정 및 GitHub 등록 가이드
 
 > **문서 목적:** `mindmapping_study`의 기획 배경, 아키텍처, 기능, 개발 이력, 시행착오, 실행 방법, GitHub 최초 등록 및 이후 운영 절차를 한국어로 정리한다.  
-> **대상 버전:** v7 (Language Policy & Report Quality Audit)  
+> **대상 버전:** v8 (Document Flow; v7 기능 포함)  
 > **GitHub:** https://github.com/junomoon-creator/textbook_mindmap_study  
 > **로컬 개발 환경:** WSL Ubuntu / `~/projects/mindmapping_study`  
 > **작성 기준:** 기존 프로젝트 v7 소스 및 README와 개발 대화에서 확인된 사항. 실제 Claude API·GCS End-to-End 동작은 별도 검증이 필요하다.
@@ -819,3 +819,64 @@ Local 수정이 남아 있다면 먼저 Commit하거나 Stash하여 충돌을 �
 - **Collaboration/Versioning:** GitHub Repository와 Git 기반 변경 관리
 
 **권장 운영 원칙:** AI가 생성한 기술적 설명은 원본 PDF와 대조하고, GCS/Anthropic Credential과 비공개 자료는 GitHub에 포함하지 않으며, 기능 변경 시 Test와 README를 함께 갱신한다.
+
+
+---
+
+## 12. v8 개발 — Document Flow (본문 Reading Order)
+
+### 12.1 개발 배경
+
+기존 v7 Mindmap의 `계층형`, `Focus Graph`, `전체 관계형`은 Concept의 상하위 및 관련 관계를 보여주지만, **Textbook의 논리가 어떤 순서로 전개되는지** 파악하기 어려웠다. 따라서 기존 Concept Map을 대체하지 않고, 원문 진행 순서를 따라 학습할 수 있는 `Document Flow` View를 추가했다.
+
+### 12.2 이번 구현 범위
+
+1. `mindmapping_study/document_flow.py` 신규 작성: `reading_sequence()`로 Concept를 **최초 인용 PDF 페이지** 기준 정렬한다.
+2. 동일한 첫 인용 페이지를 가진 Concept는 기존 결과의 저장 순서를 Tie-breaker로 사용한다.
+3. `page_groups()`로 Concept를 PDF 페이지별로 묶는다.
+4. `app.py`의 `Mindmap 보기`에 `Document Flow`를 추가한다.
+5. 왼쪽에 페이지별 순차 Concept 목록, 오른쪽에 기존 Study Note와 PDF Preview를 표시한다.
+6. `chapter_root`, `partN_group`과 같은 Chunk 통합용 구조 노드는 Reading Order에서 제외한다.
+7. 기존 `LearningResult` Schema와 v7 GCS Cache를 변경하지 않아 **Claude 재분석 없이 기존 학습 결과에 적용**할 수 있다.
+8. `tests/test_document_flow.py`에 Page Sorting, Tie-break, Structural Node 제외 테스트를 추가한다.
+
+### 12.3 데이터 정확성 및 한계
+
+- 이 기능은 현재 **Page-based Approximate Reading Order**다.
+- `source_pages=[33]`만으로는 p.33 내부에서 A → B → C 중 어느 개념이 먼저 등장했는지 확인할 수 없다.
+- 따라서 같은 페이지에서 표시되는 순서는 원문에 대한 확정적인 Text Order가 아니다.
+- `source_pages`가 잘못 추출되었다면 Flow도 부정확할 수 있다.
+- 실제 저자의 전개 순서를 복원하려면 PDF Text Block Position, Section Anchor, Concept-to-Source Alignment를 추가해야 한다.
+
+### 12.4 사용 방법
+
+```text
+Streamlit 실행
+  → Textbook 및 Page Range 선택
+  → 기존 분석 결과 불러오기 또는 신규 분석
+  → Interactive Mindmap
+  → Mindmap 보기: Document Flow
+  → PDF 페이지별 Concept 목록 클릭
+  → 오른쪽 Study Note / PDF Preview 확인
+```
+
+### 12.5 향후 v9 개발 후보
+
+- PyMuPDF Text Block/Span 좌표 기반 Source Anchor 저장
+- 동일 페이지 내 Concept의 실제 본문 순서 추정 및 검증
+- Chapter → Section → Paragraph → Concept의 Hierarchical Reading Flow
+- 순차 학습 진행률, 이전/다음 Concept, Section 완료 상태 저장
+
+### 12.6 Git 반영
+
+```bash
+cd ~/projects/mindmapping_study
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+python -m pytest -q
+git add app.py mindmapping_study/document_flow.py tests/test_document_flow.py README.md juno_mindmap_study_overview.md
+git commit -m "feat: add document reading flow view"
+git push
+```
+
+> **주의:** 위 절차는 v8 파일을 로컬 프로젝트에 복사한 후 실행한다. GitHub Repository에 자동으로 Push된 것은 아니다.
