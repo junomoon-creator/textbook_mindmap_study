@@ -1,0 +1,1 @@
+"""Mindmapping Study app."""
